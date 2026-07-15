@@ -16,7 +16,8 @@
   License: MIT
 */
 
-const flaskPort = ${PI_MANAGER_PORT}; // Port of your Flask Pi Manager API
+// Manager endpoints are served by the same Flask process as this page.
+const managerUrl = (path) => new URL(path, window.location.href).toString();
 let pis = []; // Global list for dashboard + modal
 let justAddedOfflineIp = null;
 let currentlyEditingItem = null;
@@ -56,7 +57,7 @@ function formatIpInput(evt) {
 // Load from Flask JSON endpoint
 async function loadPiList() {
   try {
-    const response = await fetch(`http://${window.location.hostname}:${flaskPort}/get_pi_list`);
+    const response = await fetch(managerUrl("/get_pi_list"));
     const data = await response.json();
     pis = data;
     renderPiList();
@@ -187,7 +188,7 @@ function handleEditMode(li, pi) {
 // This function posts the updated Pi data to the '/edit_pi' endpoint.
 async function editPi(originalIp, updatedPi) {
   try {
-    const response = await fetch(`http://${window.location.hostname}:${flaskPort}/edit_pi`, {
+    const response = await fetch(managerUrl("/edit_pi"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ originalIp, ...updatedPi })
@@ -326,7 +327,7 @@ async function addPi() {
 
   // POST to add_pi regardless of reachability (UI will reflect error state)
   try {
-    const response = await fetch(`http://${window.location.hostname}:${flaskPort}/add_pi`, {
+    const response = await fetch(managerUrl("/add_pi"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, ip, port })
@@ -398,7 +399,7 @@ function clearAlert() {
 // Delete Pi by IP
 async function deletePi(ip) {
   try {
-    const response = await fetch(`http://${window.location.hostname}:${flaskPort}/delete_pi`, {
+    const response = await fetch(managerUrl("/delete_pi"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ip })
@@ -820,4 +821,50 @@ window.addEventListener("DOMContentLoaded", async () => {
     addIpInput.dataset.prevIp = '';
     addIpInput.addEventListener("input", formatIpInput);
   }
+
+  const fanSettingsModal = document.getElementById("fanSettingsModal");
+  if (fanSettingsModal) fanSettingsModal.addEventListener("show.bs.modal", loadFanConfig);
+  const saveFanConfigButton = document.getElementById("saveFanConfig");
+  if (saveFanConfigButton) saveFanConfigButton.addEventListener("click", saveFanConfig);
 });
+
+async function loadFanConfig() {
+  const alertBox = document.getElementById("fanConfigAlert");
+  alertBox.className = "alert d-none";
+  try {
+    const response = await fetch(managerUrl("/fan-config"));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const config = await response.json();
+    document.getElementById("fanGpio").value = config.gpio;
+    document.getElementById("fanStartTemp").value = config.start_temp;
+    document.getElementById("fanFullTemp").value = config.full_temp;
+    document.getElementById("fanMinDuty").value = config.min_duty;
+  } catch (error) {
+    alertBox.className = "alert alert-danger";
+    alertBox.textContent = `Could not load fan settings: ${error.message}`;
+  }
+}
+
+async function saveFanConfig() {
+  const alertBox = document.getElementById("fanConfigAlert");
+  const config = {
+    gpio: Number(document.getElementById("fanGpio").value),
+    start_temp: Number(document.getElementById("fanStartTemp").value),
+    full_temp: Number(document.getElementById("fanFullTemp").value),
+    min_duty: Number(document.getElementById("fanMinDuty").value)
+  };
+  try {
+    const response = await fetch(managerUrl("/fan-config"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config)
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    alertBox.className = "alert alert-success";
+    alertBox.textContent = "Fan curve saved. Temperature and duty changes apply within five seconds.";
+  } catch (error) {
+    alertBox.className = "alert alert-danger";
+    alertBox.textContent = `Could not save fan settings: ${error.message}`;
+  }
+}

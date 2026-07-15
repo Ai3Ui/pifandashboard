@@ -39,6 +39,9 @@
     <h1 class="mb-4"><i class="bi bi-speedometer2"></i> Raspberry Pi Fan Status</h1>
     <div id="countdown-desktop" class="position-absolute top-0 end-0 d-none d-md-block" style="margin-right: 0.75rem;">
       <div class="d-flex align-items-center gap-2">
+        <button class="btn btn-info btn-lg" data-bs-toggle="modal" data-bs-target="#fanSettingsModal">
+          <i class="bi bi-fan me-1"></i>Fan Settings
+        </button>
         <button class="btn btn-warning btn-lg" data-bs-toggle="modal" data-bs-target="#piListModal">
           <i class="bi bi-pencil-square me-1"></i>Edit Pi List
         </button>
@@ -48,6 +51,9 @@
       </div>
     </div>
     <div id="countdown-mobile" class="d-block d-md-none my-3">
+      <button class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#fanSettingsModal">
+        <i class="bi bi-fan me-1"></i>Fan Settings
+      </button>
       <button class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#piListModal">
         <i class="bi bi-pencil-square me-1"></i>Edit Pi List
       </button>
@@ -94,6 +100,43 @@
         <small class="text-muted">Not affiliated with Raspberry Pi Ltd</small>
       </span>
     </footer>
+  </div>
+  <!-- Fan Settings Modal -->
+  <div class="modal fade" id="fanSettingsModal" tabindex="-1" aria-labelledby="fanSettingsModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content bg-dark text-white">
+        <div class="modal-header">
+          <h5 class="modal-title" id="fanSettingsModalLabel"><i class="bi bi-fan me-2"></i>Fan Curve</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="fanConfigAlert" class="alert d-none" role="alert"></div>
+          <div class="row g-3">
+            <div class="col-6">
+              <label for="fanStartTemp" class="form-label">Fan starts at (°C)</label>
+              <input type="number" class="form-control" id="fanStartTemp" min="20" max="75" step="1">
+            </div>
+            <div class="col-6">
+              <label for="fanFullTemp" class="form-label">Full speed at (°C)</label>
+              <input type="number" class="form-control" id="fanFullTemp" min="25" max="90" step="1">
+            </div>
+            <div class="col-6">
+              <label for="fanMinDuty" class="form-label">Starting speed (%)</label>
+              <input type="number" class="form-control" id="fanMinDuty" min="20" max="100" step="1">
+            </div>
+            <div class="col-6">
+              <label for="fanGpio" class="form-label">PWM GPIO (BCM)</label>
+              <input type="number" class="form-control" id="fanGpio" min="2" max="27" step="1">
+            </div>
+          </div>
+          <p class="text-secondary small mt-3 mb-0">GPIO changes take effect after restarting the fan service. Other values apply automatically.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Close</button>
+          <button type="button" class="btn btn-success" id="saveFanConfig">Save Fan Curve</button>
+        </div>
+      </div>
+    </div>
   </div>
   <!-- Pi List Modal -->
   <div class="modal fade" id="piListModal" tabindex="-1" aria-labelledby="piListModalLabel" aria-hidden="true">

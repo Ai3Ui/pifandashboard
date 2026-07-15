@@ -1,0 +1,22 @@
+[Unit]
+Description=Pi Fan Dashboard web interface
+After=network.target pifandashboard-fan.service
+Requires=pifandashboard-fan.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pifandashboard/app/dashboard.py
+Restart=on-failure
+RestartSec=3
+User=pifandashboard
+Group=pifandashboard
+Environment=PIFAN_PORT=8088
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/pifandashboard /var/lib/pifandashboard
+
+[Install]
+WantedBy=multi-user.target
