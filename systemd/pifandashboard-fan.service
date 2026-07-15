@@ -4,12 +4,52 @@ After=local-fs.target
 
 [Service]
 Type=simple
+User=pifandashboard-fan
+Group=pifandashboard
+SupplementaryGroups=gpio
+WorkingDirectory=/run/pifandashboard
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/pifandashboard
+EnvironmentFile=/etc/pifandashboard/fan.env
 ExecStart=/usr/bin/python3 /opt/pifandashboard/app/fan_control.py
-Restart=on-failure
+Restart=always
 RestartSec=3
-User=root
+TimeoutStopSec=10
 RuntimeDirectory=pifandashboard
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=/dev/gpiochip0 rw
+DeviceAllow=/dev/gpiochip1 rw
+DeviceAllow=/dev/gpiomem rw
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectHostname=true
+ProtectProc=invisible
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ReadWritePaths=/run/pifandashboard
+MemoryHigh=32M
+MemoryMax=64M
+TasksMax=16
+LimitNOFILE=64
 
 [Install]
 WantedBy=multi-user.target

@@ -1,22 +1,51 @@
 [Unit]
 Description=Pi Fan Dashboard web interface
 After=network.target pifandashboard-fan.service
-Requires=pifandashboard-fan.service
+Wants=pifandashboard-fan.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/pifandashboard/app/dashboard.py
-Restart=on-failure
-RestartSec=3
-User=pifandashboard
+User=pifandashboard-web
 Group=pifandashboard
-Environment=PIFAN_PORT=8088
+SupplementaryGroups=pifandashboard-auth
+WorkingDirectory=/opt/pifandashboard
+EnvironmentFile=/etc/pifandashboard/web.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/waitress-serve --host=${PIFAN_BIND} --port=${PIFAN_PORT} --threads=4 --connection-limit=50 --channel-timeout=30 --cleanup-interval=30 --max-request-header-size=8192 --max-request-body-size=16384 app.dashboard:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+UMask=0027
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
 PrivateTmp=true
+PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/etc/pifandashboard /var/lib/pifandashboard
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectHostname=true
+ProtectProc=invisible
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadWritePaths=/var/lib/pifandashboard/web /var/lib/pifandashboard/config
+MemoryHigh=96M
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=256
 
 [Install]
 WantedBy=multi-user.target

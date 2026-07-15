@@ -1,189 +1,174 @@
-<!--
-  Pi Fan Dashboard
-  https://github.com/JustASquirrelinAround/pifandashboard
-
-  Description:
-  A responsive, real-time dashboard for monitoring CPU temperature,
-  fan speed, CPU usage, and memory usage across multiple Raspberry Pis.
-
-  Built using:
-  - Bootstrap 5
-  - Chart.js
-  - Vanilla JavaScript
-  - Flask (for the API backend on each Pi)
-  - DietPi as the OS of choice (works with RPi OS with small changes)
-
-  Author: JustASquirrelinAround
-  License: MIT
-
-  This project is open-source and freely available for modification and redistribution
-  under the terms of the MIT License.
--->
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Fan Status Dashboard</title>
-  <link
-    href="data:image/x-icon;base64,AAABAAEAEBAQAAEABAAoAQAAFgAAACgAAAAQAAAAIAAAAAEABAAAAAAAgAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAlJSUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABEAAAAAAAAAEQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAIAAAfgAAAfOAAAHjgAAD58AAAkPAAAIAwAADAEAAA8JAAAPnwAABx4AAAc+AAAB+AAAEACAAAAAAAA"
-    rel="icon" type="image/x-icon">
-  <link href="css/bootstrap.min.css" rel="stylesheet">
-  <link href="css/bootstrap-icons.min.css" rel="stylesheet">
-  <link href="css/styles.css" rel="stylesheet">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1118">
+  <title>Pi Fan Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='7' fill='%237ce7d8'/%3E%3Cpath fill='%237ce7d8' d='M34 5c12 0 16 11 9 21l-6 7c-2 2-6 0-5-3l2-9c1-4-2-7-6-7V5zm25 29c0 12-11 16-21 9l-7-6c-2-2 0-6 3-5l9 2c4 1 7-2 7-6h9zM30 59c-12 0-16-11-9-21l6-7c2-2 6 0 5 3l-2 9c-1 4 2 7 6 7v9zM5 30c0-12 11-16 21-9l7 6c2 2 0 6-3 5l-9-2c-4-1-7 2-7 6H5z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
 </head>
+<body>
+  <a class="skip-link" href="#dashboard">Skip to dashboard</a>
 
-<body class="bg-dark text-white p-4">
-  <div class="container position-relative">
-    <h1 class="mb-4"><i class="bi bi-speedometer2"></i> Raspberry Pi Fan Status</h1>
-    <div id="countdown-desktop" class="position-absolute top-0 end-0 d-none d-md-block" style="margin-right: 0.75rem;">
-      <div class="d-flex align-items-center gap-2">
-        <button class="btn btn-info btn-lg" data-bs-toggle="modal" data-bs-target="#fanSettingsModal">
-          <i class="bi bi-fan me-1"></i>Fan Settings
-        </button>
-        <button class="btn btn-warning btn-lg" data-bs-toggle="modal" data-bs-target="#piListModal">
-          <i class="bi bi-pencil-square me-1"></i>Edit Pi List
-        </button>
-        <div class="badge bg-info text-dark p-3 fs-6 shadow" style="width: 210px;">
-          <i class="bi bi-hourglass-split"></i> Next update in <span id="countdown-desktop-value">10</span>s
-        </div>
-      </div>
-    </div>
-    <div id="countdown-mobile" class="d-block d-md-none my-3">
-      <button class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#fanSettingsModal">
-        <i class="bi bi-fan me-1"></i>Fan Settings
-      </button>
-      <button class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#piListModal">
-        <i class="bi bi-pencil-square me-1"></i>Edit Pi List
-      </button>
-      <div class="badge bg-info text-dark p-2 fs-6 shadow" style="width: 200px;">
-        <i class="bi bi-hourglass-split"></i> Next update in <span id="countdown-mobile-value">10</span>s
-      </div>
-      <div class="mt-2 text-end">
-      </div>
-    </div>
-    <div class="card bg-secondary text-white shadow mb-4">
-      <div class="card-body">
-        <!-- Top row: Summary title + badges -->
-        <div class="d-flex flex-wrap justify-content-between align-items-center">
-          <div class="d-flex align-items-center flex-wrap gap-2">
-            <h5 class="card-title mb-0 me-1"><i class="bi bi-info-circle"></i> Summary</h5>
-            <span class="badge bg-success" id="online-count">
-              <i class="bi bi-check-circle me-1"></i>Online: 0
-            </span>
-            <span class="badge bg-danger" id="offline-count">
-              <i class="bi bi-x-circle me-1"></i>Offline: 0
-            </span>
-            <span class="badge bg-dark" id="last-update">
-              <i class="bi bi-clock me-1"></i>Last update: --:--
-            </span>
-          </div>
-          <!-- Button aligned to end -->
-          <div id="cardrowButton" class="d-none d-xl-block">
-            <button class="btn btn-outline-light btn-sm" onclick="toggleCardLayout()" id="layoutToggleBtn">
-              <i class="bi bi-grid-3x2-gap-fill me-1"></i>Toggle 3 cards per row
-            </button>
+  <dialog id="loginDialog" class="dialog auth-dialog" aria-labelledby="loginTitle">
+    <form id="loginForm" class="dialog-card auth-card" method="post" action="/auth/login">
+      <div class="brand-mark" aria-hidden="true"><span></span></div>
+      <p class="eyebrow">DASHBOARD ACCESS</p>
+      <h1 id="loginTitle">Pi Fan Dashboard</h1>
+      <p class="dialog-intro">Enter the dashboard password to monitor and configure your Raspberry Pi.</p>
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+      <p id="loginMessage" class="notice" role="alert" aria-live="polite" hidden></p>
+      <button class="button primary wide" type="submit">Sign in</button>
+    </form>
+  </dialog>
+
+  <div id="appShell" class="app-shell" hidden>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-mark small" aria-hidden="true"><span></span></div>
+          <div>
+            <p class="eyebrow">COOLING CONTROL</p>
+            <h1>Pi Fan Dashboard</h1>
           </div>
         </div>
+        <div class="header-actions" aria-label="Dashboard controls">
+          <button id="fanSettingsButton" class="button" type="button">Fan settings</button>
+          <button id="managePisButton" class="button" type="button">Manage Pis</button>
+          <button id="layoutToggleButton" class="button compact" type="button" aria-pressed="false">3 columns</button>
+          <button id="logoutButton" class="button ghost compact" type="button">Sign out</button>
+        </div>
       </div>
-    </div>
-    <div id="fanStatus" class="row g-4"></div>
-    <hr class="my-4">
-    <footer class="text-center my-4">
-      <span class="badge bg-secondary text-light py-2 px-3">
-        Created by
-        <a href="https://github.com/JustASquirrelinAround"
-          class="text-light text-decoration-underline">JustASquirrelinAround</a>
-        • MIT License
-        <hr class="mt-1 mb-0">
-        <small class="text-muted">Not affiliated with Raspberry Pi Ltd</small>
-      </span>
+    </header>
+
+    <main id="dashboard" class="dashboard">
+      <section class="summary" aria-labelledby="summaryTitle">
+        <div>
+          <p class="eyebrow">LIVE OVERVIEW</p>
+          <h2 id="summaryTitle">Your Raspberry Pis</h2>
+        </div>
+        <div class="summary-status" aria-live="polite">
+          <span class="status-pill online"><span aria-hidden="true"></span><strong id="onlineCount">0</strong> online</span>
+          <span class="status-pill offline"><span aria-hidden="true"></span><strong id="offlineCount">0</strong> offline</span>
+          <span id="lastUpdate" class="muted">Waiting for first update</span>
+          <span id="countdown" class="countdown">Refresh in 10s</span>
+        </div>
+      </section>
+
+      <p id="dashboardMessage" class="notice" role="status" aria-live="polite" hidden></p>
+      <section id="fanStatus" class="pi-grid layout-two" aria-label="Raspberry Pi status"></section>
+      <section id="emptyState" class="empty-state" hidden>
+        <h2>No Raspberry Pis added</h2>
+        <p>Add this Pi or another dashboard endpoint to begin monitoring.</p>
+        <button id="emptyAddButton" class="button primary" type="button">Add a Pi</button>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Pi Fan Dashboard</span>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/Ai3Ui/pifandashboard">Open-source project</a>
+      <span aria-hidden="true">·</span>
+      <span>MIT License</span>
     </footer>
   </div>
-  <!-- Fan Settings Modal -->
-  <div class="modal fade" id="fanSettingsModal" tabindex="-1" aria-labelledby="fanSettingsModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-      <div class="modal-content bg-dark text-white">
-        <div class="modal-header">
-          <h5 class="modal-title" id="fanSettingsModalLabel"><i class="bi bi-fan me-2"></i>Fan Curve</h5>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+
+  <dialog id="fanSettingsDialog" class="dialog" aria-labelledby="fanSettingsTitle">
+    <form id="fanSettingsForm" class="dialog-card" method="dialog">
+      <header class="dialog-header">
+        <div>
+          <p class="eyebrow">COOLING PROFILE</p>
+          <h2 id="fanSettingsTitle">Fan settings</h2>
         </div>
-        <div class="modal-body">
-          <div id="fanConfigAlert" class="alert d-none" role="alert"></div>
-          <div class="row g-3">
-            <div class="col-6">
-              <label for="fanStartTemp" class="form-label">Fan starts at (°C)</label>
-              <input type="number" class="form-control" id="fanStartTemp" min="20" max="75" step="1">
-            </div>
-            <div class="col-6">
-              <label for="fanFullTemp" class="form-label">Full speed at (°C)</label>
-              <input type="number" class="form-control" id="fanFullTemp" min="25" max="90" step="1">
-            </div>
-            <div class="col-6">
-              <label for="fanMinDuty" class="form-label">Starting speed (%)</label>
-              <input type="number" class="form-control" id="fanMinDuty" min="20" max="100" step="1">
-            </div>
-            <div class="col-6">
-              <label for="fanGpio" class="form-label">PWM GPIO (BCM)</label>
-              <input type="number" class="form-control" id="fanGpio" min="2" max="27" step="1">
-            </div>
-          </div>
-          <p class="text-secondary small mt-3 mb-0">GPIO changes take effect after restarting the fan service. Other values apply automatically.</p>
+        <button class="icon-button" type="button" data-close-dialog="fanSettingsDialog" aria-label="Close fan settings">×</button>
+      </header>
+      <p class="dialog-intro">Set when the fan starts, how quickly it ramps, and when it returns to idle.</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="fanGpio">Fan output GPIO (BCM)</label>
+          <select id="fanGpio" name="gpio" required disabled>
+            <option value="12">GPIO 12</option>
+            <option value="13">GPIO 13</option>
+            <option value="14">GPIO 14</option>
+            <option value="18">GPIO 18</option>
+            <option value="19">GPIO 19</option>
+          </select>
+          <small>Installer-set software PWM output. Re-run install.sh with --gpio N to change it.</small>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Close</button>
-          <button type="button" class="btn btn-success" id="saveFanConfig">Save Fan Curve</button>
+        <div class="field">
+          <label for="fanMinDuty">Starting speed</label>
+          <div class="input-unit"><input id="fanMinDuty" name="min_duty" type="number" min="35" max="100" step="1" required><span>%</span></div>
+          <small>Minimum reliable speed for your fan.</small>
+        </div>
+        <div class="field">
+          <label for="fanStartTemp">Fan starts at</label>
+          <div class="input-unit"><input id="fanStartTemp" name="start_temp" type="number" min="20" max="75" step="1" required><span>°C</span></div>
+        </div>
+        <div class="field">
+          <label for="fanFullTemp">Full speed at</label>
+          <div class="input-unit"><input id="fanFullTemp" name="full_temp" type="number" min="25" max="90" step="1" required><span>°C</span></div>
+        </div>
+        <div class="field">
+          <label for="fanHysteresis">Stop hysteresis</label>
+          <div class="input-unit"><input id="fanHysteresis" name="hysteresis" type="number" min="0" max="10" step="0.5" required><span>°C</span></div>
+          <small>The fan stops this far below the start temperature.</small>
         </div>
       </div>
-    </div>
-  </div>
-  <!-- Pi List Modal -->
-  <div class="modal fade" id="piListModal" tabindex="-1" aria-labelledby="piListModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-      <div class="modal-content bg-dark text-white">
-        <div class="modal-header">
-          <h5 class="modal-title" id="piListModalLabel"><i class="bi bi-pencil-square me-2"></i>Edit Pi List</h5>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body">
-          <h4>Add or Edit a Pi</h4>
-          <!-- Input section -->
-          <div class="row g-2 mb-2">
-            <div class="col-md-4">
-              <input type="text" class="form-control" id="piNameInput" placeholder="Pi Name">
-            </div>
-            <div class="col-md-4">
-              <input type="text" id="piIpInput" class="form-control" placeholder="192.168.1.10" pattern="^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.|$)){4}$" required>
-            </div>
-            <div class="col-md-4">
-              <input type="number" class="form-control" id="piPortInput" placeholder="Port (e.g., 10000)" min="1024" max="65535" required>
-            </div>
-          </div>
-          <div class="text-end mb-3">
-            <button id="addPiButton" class="btn btn-success btn-sm">
-              <i class="bi bi-plus-circle me-1"></i>Add Pi
-            </button>
-          </div>
-          <div id="piAlert" class="alert d-none" role="alert"></div>
+      <p id="fanConfigMessage" class="notice" role="alert" aria-live="polite" hidden></p>
+      <div class="dialog-actions">
+        <button class="button ghost" type="button" data-close-dialog="fanSettingsDialog">Cancel</button>
+        <button class="button primary" type="submit">Save settings</button>
+      </div>
+    </form>
+  </dialog>
 
-          <!-- Existing Pi List (populated dynamically) -->
-          <div id="piListDisplay" class="list-group">
-            <!-- JavaScript will inject entries here -->
-          </div>
-
+  <dialog id="piListDialog" class="dialog wide-dialog" aria-labelledby="piListTitle">
+    <div class="dialog-card">
+      <header class="dialog-header">
+        <div>
+          <p class="eyebrow">MONITORED DEVICES</p>
+          <h2 id="piListTitle">Manage Raspberry Pis</h2>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">
-            <i class="bi bi-x-circle me-1"></i>Close
-          </button>
+        <button class="icon-button" type="button" data-close-dialog="piListDialog" aria-label="Close Pi manager">×</button>
+      </header>
+      <form id="addPiForm" class="add-pi-form" method="dialog">
+        <div class="field">
+          <label for="piNameInput">Name</label>
+          <input id="piNameInput" name="name" type="text" maxlength="40" autocomplete="off" placeholder="Kitchen Pi" required>
         </div>
+        <div class="field">
+          <label for="piIpInput">IPv4 address</label>
+          <input id="piIpInput" name="ip" type="text" inputmode="decimal" autocomplete="off" placeholder="192.168.1.10" required>
+        </div>
+        <div class="field port-field">
+          <label for="piPortInput">Web port</label>
+          <input id="piPortInput" name="port" type="number" min="1024" max="65535" value="8088" required>
+        </div>
+        <button class="button primary add-button" type="submit">Add Pi</button>
+      </form>
+      <p id="piManagerMessage" class="notice" role="alert" aria-live="polite" hidden></p>
+      <div id="piListDisplay" class="pi-list" aria-live="polite"></div>
+      <div class="dialog-actions">
+        <button class="button ghost" type="button" data-close-dialog="piListDialog">Done</button>
       </div>
     </div>
-  </div>
-  <script src="js/bootstrap.bundle.min.js"></script>
-  <script src="js/chart.js"></script>
-  <script src="js/script.js"></script>
+  </dialog>
+
+  <dialog id="deleteDialog" class="dialog confirm-dialog" aria-labelledby="deleteTitle">
+    <form id="deleteForm" class="dialog-card" method="dialog">
+      <p class="eyebrow">CONFIRM REMOVAL</p>
+      <h2 id="deleteTitle">Remove this Pi?</h2>
+      <p id="deleteMessage" class="dialog-intro"></p>
+      <div class="dialog-actions">
+        <button class="button ghost" type="button" data-close-dialog="deleteDialog">Cancel</button>
+        <button class="button danger" type="submit">Remove Pi</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="js/script.js" defer></script>
 </body>
-
 </html>

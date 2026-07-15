@@ -1,870 +1,1251 @@
-/*
-  Pi Fan Dashboard
-  https://github.com/JustASquirrelinAround/pifandashboard
-
-  Description:
-  A responsive, real-time dashboard to monitor Raspberry Pi CPU temperature,
-  fan PWM speed, memory, and CPU usage using data from a lightweight Flask API.
-
-  Technologies:
-  - Bootstrap 5 for layout
-  - Chart.js for graphs
-  - JavaScript (no frameworks)
-  - Designed for DietPi but adaptable
-
-  Author: JustASquirrelinAround
-  License: MIT
-*/
-
-// Manager endpoints are served by the same Flask process as this page.
-const managerUrl = (path) => new URL(path, window.location.href).toString();
-let pis = []; // Global list for dashboard + modal
-let justAddedOfflineIp = null;
-let currentlyEditingItem = null;
-
-// Auto-format IPv4 input: inserts dots after up to 3 digits per octet and restricts input, enforces 0-255 per octet and tracks previous value for correct dot handling
-function formatIpInput(evt) {
-  const input = evt.target;
-  const prev = input.dataset.prevIp || '';
-  // Remove non-digits/dots
-  let v = input.value.replace(/[^\d.]/g, '');
-  // Split into up to 4 parts
-  let parts = v.split('.');
-  parts = parts.slice(0, 4).map(p => {
-    // Limit to 3 chars
-    p = p.slice(0, 3);
-    // Enforce numeric 0-255
-    const num = parseInt(p, 10);
-    if (!isNaN(num)) {
-      return Math.min(num, 255).toString();
-    }
-    return p;
-  });
-  // Rebuild
-  let formatted = parts.join('.');
-  // Auto-insert dot on insertion when an octet reaches 3 digits
-  if (v.length > prev.length) {
-    const last = parts[parts.length - 1];
-    if (last.length === 3 && parts.length < 4 && !formatted.endsWith('.')) {
-      formatted += '.';
-    }
-  }
-  // Update value and store
-  input.value = formatted;
-  input.dataset.prevIp = formatted;
-}
-
-// Load from Flask JSON endpoint
-async function loadPiList() {
-  try {
-    const response = await fetch(managerUrl("/get_pi_list"));
-    const data = await response.json();
-    pis = data;
-    renderPiList();
-  } catch (err) {
-    console.error("Failed to load Pi list:", err);
-  }
-}
-
-// New Function: Switch a list item to edit mode with editable inputs
-// This function replaces the Pi entry display with input fields and Save/Cancel buttons.
-function handleEditMode(li, pi) {
-  if (currentlyEditingItem && currentlyEditingItem !== li) {
-    // Trigger cancel on previous edit
-    const cancelBtn = currentlyEditingItem.querySelector(".cancel-btn");
-    if (cancelBtn) cancelBtn.click();
-  }
-  currentlyEditingItem = li;
-  // Create input fields pre-filled with current values (name, ip, port)
-  li.innerHTML = `
-  <div class="d-flex flex-wrap justify-content-between w-100 align-items-center">
-    <div class="d-flex gap-1">
-      <input type="text" class="form-control form-control-sm edit-name flex-grow-1" style="max-width: 200px;" value="${pi.name}" />
-      <input type="text" class="form-control form-control-sm edit-ip flex-grow-1" style="max-width: 200px;" value="${pi.ip}" />
-      <input type="number" class="form-control form-control-sm edit-port flex-grow-1" style="max-width: 100px;" min="1024" max="65535" value="${pi.port}" />
-    </div>
-    <div>
-      <button class="btn btn-sm btn-success save-btn">
-        <i class="bi bi-check-lg"></i>
-      </button>
-      <button class="btn btn-sm btn-danger cancel-btn">
-        <i class="bi bi-x-lg"></i>
-      </button>
-    </div>
-  </div>
-`;
-  // Attach auto-format to the cloned IP input and initialize prevIp
-  const editIpEl = li.querySelector(".edit-ip");
-  if (editIpEl) {
-    editIpEl.dataset.prevIp = pi.ip;
-    editIpEl.addEventListener("input", formatIpInput);
-  }
-
-  li.querySelector(".save-btn").addEventListener("click", async () => {
-    const updatedName = li.querySelector(".edit-name").value.trim();
-    const updatedIp = li.querySelector(".edit-ip").value.trim();
-    const updatedPort = parseInt(li.querySelector(".edit-port").value.trim(), 10);
-    if (isNaN(updatedPort) || updatedPort < 1024 || updatedPort > 65535) {
-      showAlert("Port must be a number between 1024 and 65535.", "warning", true);
-      await loadPiList();
-      return;
-    }
-
-    if (!updatedName || !updatedIp) {
-      showAlert("Both fields are required to save.", "warning", true);
-      await loadPiList();
-      return;
-    }
-
-    const alertBox = document.getElementById("piAlert");
-
-    // Show "checking" spinner
-    alertBox.className = "alert alert-info";
-    alertBox.innerHTML = `
-    <div class="d-flex justify-content-between align-items-center">
-      <span><i class="bi bi-search me-2"></i>Checking Pi status...</span>
-      <div class="spinner-border spinner-border-sm text-primary ms-3" role="status"></div>
-    </div>
-  `;
-
-    let apiReachable = false;
-    try {
-      const fanCheck = await fetchWithTimeout(`http://${updatedIp}:${updatedPort}/status`, { timeout: 2000 });
-      if (!fanCheck.ok) {
-        li.classList.add("bg-warning-subtle", "text-dark");
-      } else {
-        li.classList.remove("bg-warning-subtle", "text-dark");
-        apiReachable = true;
-      }
-    } catch (err) {
-      li.classList.add("bg-warning-subtle", "text-dark");
-    }
-
-    const updatedPi = { name: updatedName, ip: updatedIp, port: updatedPort };
-
-    try {
-      await editPi(pi.ip, updatedPi);
-      if (apiReachable) {
-        showAlert("Pi updated successfully and is reachable.", "success");
-      } else {
-        showAlert("Pi updated, but is not reachable (offline or fan API unavailable).", "warning", true);
-      }
-    } catch (err) {
-      showAlert("Error updating Pi.", "danger", true);
-    }
-
-    // Update pi.ip to the new IP before re-rendering
-    pi.ip = updatedIp;
-
-    // Save to track offline status for re-render
-    if (!apiReachable) justAddedOfflineIp = updatedIp;
-
-    // Remove card so it is refreshed
-    const oldCard = document.getElementById(`card-${pi.ip.replaceAll(".", "-")}`);
-    if (oldCard) oldCard.remove();
-
-    await loadPiList();
-    await updateStatus();
-  });
-
-  li.querySelector(".cancel-btn").addEventListener("click", () => {
-    currentlyEditingItem = null;
-    li.innerHTML = `
-      <span><strong>${pi.name}</strong> (${pi.ip}:${pi.port})</span>
-      <div>
-        <button class="btn btn-sm btn-primary edit-btn" data-ip="${pi.ip}">
-          <i class="bi bi-pencil"></i>
-        </button>
-        <button class="btn btn-sm btn-danger delete-btn" data-ip="${pi.ip}">
-          <i class="bi bi-trash"></i>
-        </button>
-      </div>
-    `;
-    li.querySelector(".edit-btn").addEventListener("click", () => handleEditMode(li, pi));
-    li.querySelector(".delete-btn").addEventListener("click", () => deletePi(pi.ip));
-  });
-}
-
-// This function posts the updated Pi data to the '/edit_pi' endpoint.
-async function editPi(originalIp, updatedPi) {
-  try {
-    const response = await fetch(managerUrl("/edit_pi"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ originalIp, ...updatedPi })
-    });
-    if (!response.ok) {
-      throw new Error("Failed to edit Pi");
-    }
-  } catch (err) {
-    console.error("Edit Pi Error:", err);
-    alert("Could not update Pi details.");
-  }
-}
-
-// Display the Pi list in the modal
-function renderPiList() {
-  const list = document.getElementById("piListDisplay");
-  list.innerHTML = "";
-
-  pis.forEach((pi) => {
-    const item = document.createElement("div");
-    item.className = "list-group-item d-flex justify-content-between align-items-center mb-2 rounded";
-
-    const safeId = pi.ip.replaceAll(".", "-");
-    const header = document.querySelector(`#card-${safeId} .card-header`);
-
-    // Priority check: was this just added as offline?
-    if (pi.ip === justAddedOfflineIp) {
-      item.classList.add("bg-warning-subtle", "text-dark");
-    } else if (header && header.classList.contains("bg-danger")) {
-      item.classList.add("bg-warning-subtle", "text-dark");
-    } else {
-      item.classList.add("bg-secondary", "text-white");
-    }
-
-    // Set up the list item with Pi info and Edit/Delete buttons
-    item.innerHTML = `
-      <span><strong>${pi.name}</strong> (${pi.ip}:${pi.port})</span>
-      <div>
-        <button class="btn btn-sm btn-primary edit-btn" data-ip="${pi.ip}">
-          <i class="bi bi-pencil"></i>
-        </button>
-        <button class="btn btn-sm btn-danger delete-btn" data-ip="${pi.ip}">
-          <i class="bi bi-trash"></i>
-        </button>
-      </div>
-    `;
-    // Attach event handlers for edit and delete actions
-    item.querySelector(".edit-btn").addEventListener("click", () => handleEditMode(item, pi));
-    item.querySelector(".delete-btn").addEventListener("click", () => deletePi(pi.ip));
-    list.appendChild(item);
-  });
-
-  // Reset after use
-  justAddedOfflineIp = null;
-}
-
-
-// Utility: Fetch with timeout (default 2000ms)
-async function fetchWithTimeout(resource, { timeout = 2000, ...options } = {}) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-
-  try {
-    const response = await fetch(resource, {
-      ...options,
-      signal: controller.signal
-    });
-    clearTimeout(id);
-    return response;
-  } catch (err) {
-    clearTimeout(id);
-    throw err;
-  }
-}
-
-// Main Add Pi function
-async function addPi() {
-  // Clear any previous alerts
-  clearAlert();
-  const nameInput = document.getElementById("piNameInput");
-  const ipInput = document.getElementById("piIpInput");
-  const alertBox = document.getElementById("piAlert");
-
-  const name = nameInput.value.trim();
-  const ip = ipInput.value.trim();
-  const portInputVal = document.getElementById("piPortInput").value.trim();
-
-  // Check for missing fields
-  const missing = [];
-  if (!name) missing.push("name");
-  if (!ip) missing.push("IP");
-  if (!portInputVal) missing.push("port");
-  if (missing.length) {
-    // Build a human-readable, bolded list of missing fields
-    const bolded = missing.map(item => `<strong>${item}</strong>`);
-    let listStr;
-    if (bolded.length === 1) {
-      listStr = bolded[0];
-    } else if (bolded.length === 2) {
-      listStr = `${bolded[0]} and ${bolded[1]}`;
-    } else {
-      listStr = `${bolded.slice(0, -1).join(', ')}, and ${bolded.slice(-1)}`;
-    }
-    showAlert(`Please enter ${listStr}.`, "warning", true);
-    return;
-  }
-
-  // Validate port number
-  const port = parseInt(portInputVal, 10);
-  if (isNaN(port) || port < 1024 || port > 65535) {
-    showAlert("Port must be a number between 1024 and 65535.", "warning", true);
-    return;
-  }
-
-  // Show "checking" spinner
-  alertBox.className = "alert alert-info";
-  alertBox.innerHTML = `
-    <div class="d-flex justify-content-between align-items-center">
-      <span><i class="bi bi-search me-2"></i>Checking Pi status...</span>
-      <div class="spinner-border spinner-border-sm text-primary ms-3" role="status"></div>
-    </div>
-  `;
-
-  // Check if the fan API is reachable
-  let apiReachable = false;
-  try {
-    const fanCheck = await fetchWithTimeout(`http://${ip}:${port}/status`, { timeout: 2000 });
-    if (fanCheck.ok) {
-      apiReachable = true;
-    } else {
-      console.warn(`Fan API responded but not OK: ${fanCheck.status}`);
-    }
-  } catch (err) {
-    console.warn("Fan API unreachable or timed out:", err);
-  }
-
-  // POST to add_pi regardless of reachability (UI will reflect error state)
-  try {
-    const response = await fetch(managerUrl("/add_pi"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, ip, port })
-    });
-
-    if (response.status === 409) {
-      showAlert("That Pi IP already exists.", "danger", true);
-      return;
-    }
-
-    if (!response.ok) throw new Error("Failed to add Pi");
-
-    // Clear inputs
-    nameInput.value = "";
-    ipInput.value = "";
-    document.getElementById("piPortInput").value = "";
-
-    // Show success or warning
-    if (apiReachable) {
-      showAlert("Pi added and reachable.", "success");
-    } else {
-      showAlert("Pi added but not reachable (offline or fan API unavailable).", "warning");
-      if (!apiReachable) {
-        justAddedOfflineIp = ip;
-      }
-    }
-
-    // Reload list and update cards
-    await loadPiList();
-    await updateStatus();
-    currentlyEditingItem = null;
-
-  } catch (err) {
-    console.error("Add Pi Error:", err);
-    showAlert("Failed to add Pi due to an unexpected error.", "danger", true);
-  }
-}
-
-function showAlert(message, type = "success", persistent = false) {
-  const alertBox = document.getElementById("piAlert");
-  if (!alertBox) return;
-
-  // Set content and styling
-  alertBox.className = `alert alert-${type} fade show mt-2`;
-  alertBox.innerHTML = persistent
-    ? `${message} <button type="button" class="btn-close float-end" onclick="clearAlert()" aria-label="Close"></button>`
-    : message;
-
-  alertBox.classList.remove("d-none");
-
-  if (!persistent) {
-    // Fade out after 5s
-    setTimeout(() => {
-      alertBox.classList.remove("show"); // triggers fade out
-      setTimeout(() => {
-        clearAlert(); // remove completely after fade transition
-      }, 300); // Bootstrap fade duration
-    }, 5000);
-  }
-}
-
-function clearAlert() {
-  const alertBox = document.getElementById("piAlert");
-  if (!alertBox) return; // avoid error if not found
-  alertBox.className = "alert d-none";
-  alertBox.innerHTML = "";
-}
-
-// Delete Pi by IP
-async function deletePi(ip) {
-  try {
-    const response = await fetch(managerUrl("/delete_pi"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip })
-    });
-
-    if (!response.ok) throw new Error("Failed to delete Pi");
-
-    // Remove the card from the DOM if it exists
-    const card = document.getElementById(`card-${sanitizeId(ip)}`);
-    if (card) {
-      card.remove();
-    }
-
-    await loadPiList();
-  } catch (err) {
-    console.error("Delete Pi Error:", err);
-    alert("Could not delete Pi.");
-  }
-}
-
-// Hook modal open to load data
-document.getElementById("piListModal").addEventListener("shown.bs.modal", loadPiList);
-
-// Add button event
-document.getElementById("addPiButton").addEventListener("click", addPi);
-
-const refreshInterval = 10;
-let countdown = refreshInterval;
-let countdownInterval;
-const statusDiv = document.getElementById("fanStatus");
-
-const piHistory = {};
-const maxHistoryPoints = 120;
-
-const pieCharts = {};
-
-function sanitizeId(ip) {
-  return ip.replaceAll('.', '-');
-}
-
-function updateCountdownDisplay() {
-  document.getElementById("countdown-desktop-value").textContent = countdown;
-  document.getElementById("countdown-mobile-value").textContent = countdown;
-}
-
-function startCountdown() {
-  countdownInterval = setInterval(() => {
-    countdown--;
-    if (countdown <= 0) {
-      countdown = refreshInterval;
-      updateStatus();
-    }
-    updateCountdownDisplay();
-  }, 1000);
-}
-
-async function fetchStatus(pi) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(`http://${pi.ip}:${pi.port}/status`, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!response.ok) throw new Error("HTTP error");
-    const data = await response.json();
-    return { ...pi, data };
-  } catch (err) {
-    return { ...pi, data: { error: "Unavailable" } };
-  }
-}
-
-function getTempClass(temp) {
-  if (temp >= 70) return "bg-danger";
-  if (temp >= 50) return "bg-warning text-dark";
-  if (temp >= 40) return "bg-primary";
-  return "bg-info text-dark";
-}
-
-function getSpeedClass(speed) {
-  if (speed >= 80) return "bg-danger";
-  if (speed >= 25) return "bg-success";
-  return "bg-purple-subtle";
-}
-
-function getCpuColor(value) {
-  if (value >= 75) return "#dc3545";
-  if (value >= 50) return "#ffc107";
-  return "#0d6efd";
-}
-
-function renderMultiPieChart(id, cpuValue, memValue) {
-  const ctx = document.getElementById(id);
-  if (!ctx) return;
-
-  // Destroy existing chart if one exists
-  if (pieCharts[id]) {
-    pieCharts[id].destroy();
-  }
-
-  // Create and store the new chart
-  pieCharts[id] = new Chart(ctx, {
-    type: "pie",
-    data: {
-      datasets: [
-        {
-          label: "CPU",
-          data: [cpuValue, 100 - cpuValue],
-          backgroundColor: [getCpuColor(cpuValue), "#6c757d"],
-          borderWidth: 1
-        },
-        {
-          label: "Memory",
-          data: [memValue, 100 - memValue],
-          backgroundColor: ["#ffc107", "#6c757d"],
-          borderWidth: 1
-        }
-      ]
-    },
-    options: {
-      animation: false,
-      plugins: {
-        legend: { display: false }
-      }
-    }
-  });
-}
-
-function updatePiHistoryChart(pi) {
-  const safeId = sanitizeId(pi.ip);
-  if (!piHistory[safeId]) {
-    piHistory[safeId] = { labels: [], temp: [], speed: [], cpu: [], memory: [], chart: null };
-  }
-  const hist = piHistory[safeId];
-  const timestamp = new Date().toLocaleTimeString();
-  hist.labels.push(timestamp);
-  hist.temp.push(parseFloat(pi.data.temperature));
-  hist.speed.push(parseInt(pi.data.speed));
-  hist.cpu.push(parseFloat(pi.data.cpu));
-  hist.memory.push(parseFloat(pi.data.memory));
-  if (hist.labels.length > maxHistoryPoints) {
-    hist.labels.shift(); hist.temp.shift(); hist.speed.shift(); hist.cpu.shift(); hist.memory.shift();
-  }
-  const ctx = document.getElementById(`historyChart-${safeId}`);
-  if (!ctx) return;
-  if (!hist.chart) {
-    hist.chart = new Chart(ctx, {
-      type: "line",
-      data: {
-        labels: hist.labels,
-        datasets: [
-          { label: "Temp (°C)", data: hist.temp, borderColor: "#0d6efd", tension: 0.3 },
-          { label: "Fan Speed (%)", data: hist.speed, borderColor: "#198754", tension: 0.3 },
-          { label: "CPU (%)", data: hist.cpu, borderColor: "#6610f2", tension: 0.3 },
-          { label: "Memory (%)", data: hist.memory, borderColor: "#ffc107", tension: 0.3 }
-        ]
-      },
-      options: { animation: false, plugins: { legend: { display: true } }, scales: { y: { beginAtZero: true, max: 100 } } }
-    });
-  } else {
-    hist.chart.data.labels = hist.labels;
-    hist.chart.data.datasets[0].data = hist.temp;
-    hist.chart.data.datasets[1].data = hist.speed;
-    hist.chart.data.datasets[2].data = hist.cpu;
-    hist.chart.data.datasets[3].data = hist.memory;
-    hist.chart.update();
-  }
-}
-
-function updateCard(pi) {
-  const safeId = sanitizeId(pi.ip);
-  const cardEl = document.getElementById(`card-${safeId}`);
-
-  // Determine if card was previously offline
-  const wasOffline = cardEl.querySelector(".card-header.bg-danger") !== null;
-  const isNowOffline = !!pi.data.error;
-
-  // If online/offline state has changed, fully re-render card
-  if (wasOffline !== isNowOffline) {
-    cardEl.remove();
-    createCard(pi);
-
-    // Schedule a second update to render Chart.js properly
-    setTimeout(() => updateCard(pi), 0);
-    return;
-  }
-
-  // Update dot color
-  const dot = cardEl.querySelector(".status-dot");
-  if (dot) dot.style.backgroundColor = isNowOffline ? "#dc3545" : "#4be34b";
-
-  const cardBody = cardEl.querySelector(".card-body");
-  const overview = document.getElementById(`overview-${safeId}`);
-  const chartview = document.getElementById(`chartview-${safeId}`);
-  const errorBadge = cardBody.querySelector(".badge.bg-danger");
-
-  if (isNowOffline) {
-    // Hide everything else
-    if (overview) overview.classList.add("d-none");
-    if (chartview) chartview.classList.add("d-none");
-
-    // Add error badge if missing
-    if (!errorBadge) {
-      const badge = document.createElement("span");
-      badge.className = "badge bg-danger fs-6";
-      badge.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i> ${pi.data.error}`;
-      cardBody.appendChild(badge);
-    }
-
-    return;
-  }
-
-  // Now online — make sure error badge is removed
-  if (errorBadge) errorBadge.remove();
-
-  const isChartVisible = chartview && !chartview.classList.contains("d-none");
-  if (isChartVisible) {
-    chartview.classList.remove("d-none");
-    overview.classList.add("d-none");
-  } else {
-    chartview.classList.add("d-none");
-    overview.classList.remove("d-none");
-  }
-
-  // Update bars
-  const temp = parseFloat(pi.data.temperature);
-  const speed = parseInt(pi.data.speed);
-  const tempBar = cardEl.querySelector(".temp-bar");
-  const speedBar = cardEl.querySelector(".speed-bar");
-  if (tempBar) {
-    tempBar.style.width = `${temp}%`;
-    tempBar.textContent = `${temp}°C`;
-    tempBar.className = `progress-bar progress-bar-striped ${getTempClass(temp)} temp-bar`;
-  }
-  if (speedBar) {
-    speedBar.style.width = `${speed}%`;
-    speedBar.textContent = `${speed}%`;
-    speedBar.className = `progress-bar progress-bar-striped ${getSpeedClass(speed)} speed-bar`;
-  }
-
-  renderMultiPieChart(`multiChart-${safeId}`, pi.data.cpu, pi.data.memory);
-  updatePiHistoryChart(pi);
-}
-
-function createCard(pi) {
-  const safeId = sanitizeId(pi.ip);
-  const temp = pi.data.error ? 0 : parseFloat(pi.data.temperature);
-  const speed = pi.data.error ? 0 : parseInt(pi.data.speed);
-
-  const statusDot = pi.data.error
-    ? '<span class="status-dot" style="display:inline-block; width:12px; height:12px; background-color:#dc3545; border-radius:50%; margin-left:8px; vertical-align: middle;"></span>'
-    : '<span class="status-dot" style="display:inline-block; width:12px; height:12px; background-color:#4be34b; border-radius:50%; margin-left:8px; vertical-align: middle;"></span>';
-
-  const card = document.createElement("div");
-  card.className = `pi-card col-sm-12 col-md-6 ${useThreeCol ? "col-lg-4" : "col-lg-6"}`;
-  card.id = `card-${safeId}`;
-
-  card.innerHTML = `
-    <div class="card bg-secondary text-white shadow">
-    ${pi.data.error ? `
-      <div class="card-header bg-danger">
-        <div class="d-flex justify-content-between align-items-center">
-          <h5 class="card-title mb-0 d-flex align-items-center gap-2">
-            <i class="bi bi-motherboard"></i> ${pi.name}
-          </h5>
-          <div>
-            <span class="badge bg-dark text-white"><i class="bi bi-hdd-network me-1"></i>${pi.ip}:${pi.port}</span>
-            ${statusDot}
-          </div>
-        </div>
-      </div>
-    ` : `
-      <div class="card-header" style="background-color: var(--bs-tertiary-color);">
-        <div class="d-flex justify-content-between align-items-center">
-          <h5 class="card-title mb-0 d-flex align-items-center gap-2">
-            <i class="bi bi-motherboard"></i> ${pi.name}
-            <button id="back-btn-${safeId}" class="btn btn-outline-light btn-sm d-none" onclick="toggleChart('${safeId}', false)">
-              <i class='bi bi-arrow-left'></i> Back
-            </button>
-          </h5>
-          <div>
-            <span class="badge bg-dark text-white"><i class="bi bi-hdd-network me-1"></i>${pi.ip}:${pi.port}</span>
-            ${statusDot}
-          </div>
-        </div>
-      </div>
-    `}
-      <div class="card-body">
-        ${pi.data.error ? `
-            <span class="badge bg-danger fs-6"><h5 class="mb-0"><i class="bi bi-exclamation-triangle me-1"></i> ${pi.data.error}</h5></span>
-        ` : `
-        <div id="overview-${safeId}">
-          <div class="d-flex">
-            <div class="w-75 pe-3">
-              <span class="badge bg-light text-dark mb-3"><i class="bi bi-thermometer-half me-1"></i> CPU Temp</span>
-              <div class="progress mb-2">
-                <div class="progress-bar progress-bar-striped temp-bar ${getTempClass(temp)}" role="progressbar" style="width: ${temp}%" aria-valuenow="${temp}" aria-valuemin="0" aria-valuemax="80">${temp}°C</div>
-              </div>
-              <span class="badge bg-light text-dark mb-3 mt-1"><i class="bi bi-fan me-1"></i> Fan Speed</span>
-              <div class="progress">
-                <div class="progress-bar progress-bar-striped speed-bar ${getSpeedClass(speed)}" role="progressbar" style="width: ${speed}%" aria-valuenow="${speed}" aria-valuemin="0" aria-valuemax="100">${speed}%</div>
-              </div>
-              <button class="btn btn-light btn-sm mt-4" onclick="toggleChart('${safeId}', true)"><i class='bi bi-graph-up'></i> Show History</button>
-            </div>
-            <div class="w-25 d-flex flex-column align-items-center justify-content-center">
-              <canvas id="multiChart-${safeId}" width="60" height="60" style="width:60px; height:60px;"></canvas>
-              <span class="badge bg-dark small mt-2 text-center d-block">
-                <div><i class="bi bi-cpu-fill me-1"></i>CPU</div>
-                <hr class="mt-1 mb-1">
-                <div><i class="bi bi-memory me-1"></i>Memory</div>
-              </span>
-            </div>
-          </div>
-        </div>
-        <div id="chartview-${safeId}" class="d-none">
-          <div class="bg-light rounded p-2">
-            <canvas id="historyChart-${safeId}" height="185" style="max-height: 185px;"></canvas>
-          </div>
-        </div>
-        `}
-      </div>
-    </div>
-  `;
-  const cards = Array.from(document.querySelectorAll(".pi-card"));
-  const existingIndex = pis.findIndex(p => p.ip === pi.ip);
-  
-  // Insert card at the correct position
-  if (existingIndex >= 0 && existingIndex < cards.length) {
-    statusDiv.insertBefore(card, cards[existingIndex]);
-  } else {
-    statusDiv.appendChild(card); // fallback if index not found
-  }
-}
-
-function toggleChart(safeId, showChart) {
-  const overview = document.getElementById(`overview-${safeId}`);
-  const chartview = document.getElementById(`chartview-${safeId}`);
-  const backBtn = document.getElementById(`back-btn-${safeId}`);
-
-  if (!overview || !chartview || !backBtn) return;
-
-  if (showChart) {
-    overview.classList.add("d-none");
-    chartview.classList.remove("d-none");
-    backBtn.classList.remove("d-none"); // show back button
-  } else {
-    chartview.classList.add("d-none");
-    overview.classList.remove("d-none");
-    backBtn.classList.add("d-none"); // hide back button
-  }
-}
-
-// Check saved layout preference from localStorage (returns true if saved as "three")
-let useThreeCol = localStorage.getItem("cardLayout") === "three";
-
-// Apply the correct layout to all cards and update the toggle button
-function applyCardLayout() {
-  const cards = document.querySelectorAll(".pi-card");
-
-  cards.forEach(card => {
-    // Remove both possible col-lg classes first
-    card.classList.remove("col-lg-6", "col-lg-4");
-
-    // Add the appropriate one based on toggle state
-    card.classList.add(useThreeCol ? "col-lg-4" : "col-lg-6");
-  });
-
-  // Update the toggle button icon and label
-  const btn = document.getElementById("layoutToggleBtn");
-  btn.innerHTML = useThreeCol
-    ? '<i class="bi bi-grid-fill me-1"></i>Toggle 2 cards per row'   // current view = 3 → show option for 2
-    : '<i class="bi bi-grid-3x2-gap-fill me-1"></i>Toggle 3 cards per row';  // current view = 2 → show option for 3
-}
-
-// Toggle the layout mode and save it in localStorage
-function toggleCardLayout() {
-  useThreeCol = !useThreeCol;
-
-  // Save the preference for future page loads
-  localStorage.setItem("cardLayout", useThreeCol ? "three" : "two");
-
-  // Reapply layout changes to all cards and button
-  applyCardLayout();
-}
-
-async function updateStatus() {
-  const results = await Promise.all(pis.map(fetchStatus));
-  let onlineCount = 0;
-
-  results.forEach(freshPi => {
-    const safeId = sanitizeId(freshPi.ip);
-
-    // Create card if not already on page
-    if (!document.getElementById(`card-${safeId}`)) {
-      createCard(freshPi);
-    }
-
-    // Always update the card with fresh data
-    updateCard(freshPi);
-
-    // Track how many are online
-    if (!freshPi.data.error) onlineCount++;
-  });
-  document.getElementById("online-count").innerHTML = `<i class="bi bi-check-circle me-1"></i>Online: ${onlineCount}`;
-  document.getElementById("offline-count").innerHTML = `<i class="bi bi-x-circle me-1"></i>Offline: ${pis.length - onlineCount}`;
-  document.getElementById("last-update").innerHTML = `<i class="bi bi-clock me-1"></i>Last update: ${new Date().toLocaleTimeString()}`;
-}
-
-// Initial load of Pis so dashboard can use them
-window.addEventListener("DOMContentLoaded", async () => {
-  await loadPiList();
-
-  // Now pis[] is ready - and further logic can run
-  updateStatus();
-  startCountdown();
-  updateCountdownDisplay();
-  applyCardLayout();
-  const addIpInput = document.getElementById("piIpInput");
-  if (addIpInput) {
-    addIpInput.value = '';
-    addIpInput.dataset.prevIp = '';
-    addIpInput.addEventListener("input", formatIpInput);
-  }
-
-  const fanSettingsModal = document.getElementById("fanSettingsModal");
-  if (fanSettingsModal) fanSettingsModal.addEventListener("show.bs.modal", loadFanConfig);
-  const saveFanConfigButton = document.getElementById("saveFanConfig");
-  if (saveFanConfigButton) saveFanConfigButton.addEventListener("click", saveFanConfig);
-});
-
-async function loadFanConfig() {
-  const alertBox = document.getElementById("fanConfigAlert");
-  alertBox.className = "alert d-none";
-  try {
-    const response = await fetch(managerUrl("/fan-config"));
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const config = await response.json();
-    document.getElementById("fanGpio").value = config.gpio;
-    document.getElementById("fanStartTemp").value = config.start_temp;
-    document.getElementById("fanFullTemp").value = config.full_temp;
-    document.getElementById("fanMinDuty").value = config.min_duty;
-  } catch (error) {
-    alertBox.className = "alert alert-danger";
-    alertBox.textContent = `Could not load fan settings: ${error.message}`;
-  }
-}
-
-async function saveFanConfig() {
-  const alertBox = document.getElementById("fanConfigAlert");
-  const config = {
-    gpio: Number(document.getElementById("fanGpio").value),
-    start_temp: Number(document.getElementById("fanStartTemp").value),
-    full_temp: Number(document.getElementById("fanFullTemp").value),
-    min_duty: Number(document.getElementById("fanMinDuty").value)
+(function () {
+  "use strict";
+
+  var TOKEN_KEY = "pifandashboard.session";
+  var REFRESH_SECONDS = 10;
+  var STATUS_TIMEOUT_MS = 7000;
+  var MAX_HISTORY_POINTS = 60;
+  var ALLOWED_GPIOS = [12, 13, 14, 18, 19];
+
+  var pis = [];
+  var authenticated = false;
+  var authToken = "";
+  var fanConfig = {
+    gpio: 14,
+    start_temp: 45,
+    full_temp: 75,
+    min_duty: 45,
+    hysteresis: 2
   };
-  try {
-    const response = await fetch(managerUrl("/fan-config"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(config)
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-    alertBox.className = "alert alert-success";
-    alertBox.textContent = "Fan curve saved. Temperature and duty changes apply within five seconds.";
-  } catch (error) {
-    alertBox.className = "alert alert-danger";
-    alertBox.textContent = `Could not save fan settings: ${error.message}`;
+  var cards = new Map();
+  var histories = new Map();
+  var latestStatuses = new Map();
+  var countdown = REFRESH_SECONDS;
+  var clockTimer = null;
+  var updateInFlight = false;
+  var editingKey = "";
+  var pendingDelete = null;
+  var resizeTimer = null;
+
+  function byId(id) {
+    return document.getElementById(id);
   }
-}
+
+  function element(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) {
+      node.className = className;
+    }
+    if (text !== undefined && text !== null) {
+      node.textContent = String(text);
+    }
+    return node;
+  }
+
+  function addText(parent, tag, className, text) {
+    var node = element(tag, className, text);
+    parent.appendChild(node);
+    return node;
+  }
+
+  function setNotice(target, message, type) {
+    var node = typeof target === "string" ? byId(target) : target;
+    if (!node) {
+      return;
+    }
+    node.textContent = message || "";
+    node.className = "notice" + (type ? " " + type : "");
+    node.hidden = !message;
+  }
+
+  function managerUrl(path) {
+    return new URL(path, window.location.href).toString();
+  }
+
+  function getStoredToken() {
+    try {
+      return window.sessionStorage.getItem(TOKEN_KEY) || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function storeToken(token) {
+    try {
+      window.sessionStorage.setItem(TOKEN_KEY, token);
+    } catch (error) {
+      throw new Error("This browser cannot store a secure session.");
+    }
+  }
+
+  function clearToken() {
+    authToken = "";
+    try {
+      window.sessionStorage.removeItem(TOKEN_KEY);
+    } catch (error) {
+      return;
+    }
+  }
+
+  function openDialog(dialog) {
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+    }
+  }
+
+  function closeDialog(dialog) {
+    if (dialog && dialog.open) {
+      dialog.close();
+    }
+  }
+
+  function stopPolling() {
+    if (clockTimer !== null) {
+      window.clearInterval(clockTimer);
+      clockTimer = null;
+    }
+  }
+
+  function requireLogin(message) {
+    authenticated = false;
+    clearToken();
+    stopPolling();
+    byId("appShell").hidden = true;
+    setNotice("loginMessage", message || "", message ? "error" : "");
+    byId("loginPassword").value = "";
+    openDialog(byId("loginDialog"));
+    window.setTimeout(function () {
+      byId("loginPassword").focus();
+    }, 0);
+  }
+
+  async function authFetch(path, options) {
+    var requestOptions = options ? Object.assign({}, options) : {};
+    var headers = new Headers(requestOptions.headers || {});
+    if (authToken) {
+      headers.set("Authorization", "Bearer " + authToken);
+    }
+    headers.set("Accept", "application/json");
+    requestOptions.headers = headers;
+    var response = await window.fetch(managerUrl(path), requestOptions);
+    if (response.status === 401 && path !== "/auth/login") {
+      requireLogin("Your session expired. Please sign in again.");
+    }
+    return response;
+  }
+
+  async function readResponseJson(response) {
+    try {
+      return await response.json();
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function errorFromResponse(response, data, fallback) {
+    if (data && typeof data.error === "string" && data.error) {
+      return data.error;
+    }
+    if (response.status === 429) {
+      return "Too many attempts. Wait a moment and try again.";
+    }
+    return fallback + " (HTTP " + response.status + ")";
+  }
+
+  async function handleLogin(event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var submit = form.querySelector('button[type="submit"]');
+    var password = byId("loginPassword").value;
+    setNotice("loginMessage", "", "");
+    submit.disabled = true;
+    try {
+      var response = await window.fetch(managerUrl("/auth/login"), {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ password: password })
+      });
+      var data = await readResponseJson(response);
+      if (!response.ok) {
+        throw new Error(errorFromResponse(response, data, "Sign-in failed"));
+      }
+      var token = data.token || data.access_token;
+      if (typeof token !== "string" || token.length < 16) {
+        throw new Error("The server did not return a valid session token.");
+      }
+      storeToken(token);
+      authToken = token;
+      authenticated = true;
+      closeDialog(byId("loginDialog"));
+      byId("appShell").hidden = false;
+      byId("loginPassword").value = "";
+      await startDashboard();
+    } catch (error) {
+      setNotice("loginMessage", error.message || "Could not sign in.", "error");
+      byId("loginPassword").select();
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  async function verifySession() {
+    authToken = getStoredToken();
+    if (!authToken) {
+      requireLogin("");
+      return;
+    }
+    try {
+      var response = await authFetch("/auth/check");
+      if (!response.ok) {
+        if (response.status !== 401) {
+          requireLogin("The saved session could not be verified.");
+        }
+        return;
+      }
+      authenticated = true;
+      closeDialog(byId("loginDialog"));
+      byId("appShell").hidden = false;
+      await startDashboard();
+    } catch (error) {
+      requireLogin("Could not reach the dashboard service.");
+    }
+  }
+
+  async function logout() {
+    var button = byId("logoutButton");
+    button.disabled = true;
+    try {
+      await authFetch("/auth/logout", { method: "POST" });
+    } catch (error) {
+      return;
+    } finally {
+      button.disabled = false;
+      requireLogin("Signed out.");
+    }
+  }
+
+  function piKey(pi) {
+    return String(pi.ip) + ":" + String(pi.port);
+  }
+
+  function finiteNumber(value, fallback) {
+    var number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+
+  function bounded(value, minimum, maximum) {
+    return Math.min(maximum, Math.max(minimum, value));
+  }
+
+  function displayPercent(value) {
+    return Number.isFinite(value) ? Math.round(value) + "%" : "—";
+  }
+
+  function displayTemperature(value) {
+    return Number.isFinite(value) ? value.toFixed(1) + "°C" : "—";
+  }
+
+  function normalizeStatus(data) {
+    var rawTemp = data.temperature !== undefined ? data.temperature : data.cpu_temp;
+    var rawFan = data.speed !== undefined ? data.speed : (data.fan_duty !== undefined ? data.fan_duty : data.duty);
+    var rawDisk = data.disk !== undefined ? data.disk : (data.disk_percent !== undefined ? data.disk_percent : data.storage);
+    return {
+      temperature: finiteNumber(rawTemp, NaN),
+      fan: finiteNumber(rawFan, NaN),
+      cpu: finiteNumber(data.cpu, NaN),
+      memory: finiteNumber(data.memory, NaN),
+      disk: finiteNumber(rawDisk, NaN),
+      hostname: typeof data.hostname === "string" ? data.hostname : "",
+      curve: data.curve && typeof data.curve === "object" ? data.curve : null,
+      controllerError: typeof data.controller_error === "string" && data.controller_error ?
+        data.controller_error : ""
+    };
+  }
+
+  function curveForStatus(status) {
+    var curve = status && status.curve ? status.curve : fanConfig;
+    return {
+      gpio: finiteNumber(curve.gpio, fanConfig.gpio),
+      start_temp: finiteNumber(curve.start_temp, fanConfig.start_temp),
+      full_temp: finiteNumber(curve.full_temp, fanConfig.full_temp),
+      min_duty: finiteNumber(curve.min_duty, fanConfig.min_duty),
+      hysteresis: finiteNumber(curve.hysteresis, fanConfig.hysteresis)
+    };
+  }
+
+  async function fetchFleetStatus() {
+    var controller = new AbortController();
+    var timeout = window.setTimeout(function () {
+      controller.abort();
+    }, STATUS_TIMEOUT_MS);
+    try {
+      var response = await authFetch("/fleet-status", { signal: controller.signal });
+      var data = await readResponseJson(response);
+      if (!response.ok) {
+        throw new Error(errorFromResponse(response, data, "Fleet status unavailable"));
+      }
+      if (!Array.isArray(data)) {
+        throw new Error("The fleet status response was not valid.");
+      }
+      return data;
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        throw new Error("The fleet status request timed out.");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  function currentServerPort() {
+    if (window.location.port) {
+      return Number(window.location.port);
+    }
+    return window.location.protocol === "https:" ? 443 : 80;
+  }
+
+  async function loadPiList() {
+    var response = await authFetch("/get_pi_list");
+    var data = await readResponseJson(response);
+    if (!response.ok) {
+      throw new Error(errorFromResponse(response, data, "Could not load the Pi list"));
+    }
+    if (!Array.isArray(data)) {
+      throw new Error("The Pi list response was not valid.");
+    }
+    var normalized = data.filter(function (pi) {
+      return pi && typeof pi.name === "string" && typeof pi.ip === "string" &&
+        Number.isInteger(Number(pi.port));
+    }).map(function (pi) {
+      return { name: pi.name, ip: pi.ip, port: Number(pi.port) };
+    });
+    if (normalized.length !== data.length || normalized.some(function (pi) {
+      return Boolean(validatePi(pi));
+    })) {
+      throw new Error("The Pi list contains invalid device details.");
+    }
+    pis = normalized;
+    syncCards();
+    renderPiManager();
+  }
+
+  function makeMetric(label, name) {
+    var metric = element("div", "metric");
+    addText(metric, "span", "metric-label", label);
+    var value = addText(metric, "strong", "metric-value", "—");
+    value.dataset.metric = name;
+    return metric;
+  }
+
+  function makeLegend(items, className) {
+    var legend = element("div", className);
+    items.forEach(function (item) {
+      var entry = element("span", "legend-item");
+      var swatch = element("span", "legend-swatch series-" + item.series);
+      swatch.setAttribute("aria-hidden", "true");
+      entry.appendChild(swatch);
+      addText(entry, "span", "", item.label);
+      legend.appendChild(entry);
+    });
+    return legend;
+  }
+
+  function createVisual(title, canvasClass, accessibleLabel) {
+    var figure = element("figure", "visual");
+    addText(figure, "figcaption", "", title);
+    var canvas = element("canvas", canvasClass);
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", accessibleLabel);
+    figure.appendChild(canvas);
+    return { figure: figure, canvas: canvas };
+  }
+
+  function createCard(pi) {
+    var key = piKey(pi);
+    var card = element("article", "pi-card");
+    card.dataset.piKey = key;
+
+    var header = element("header", "pi-card-header");
+    var identity = element("div", "");
+    var name = addText(identity, "h3", "", pi.name);
+    var endpoint = addText(identity, "span", "endpoint", pi.ip + ":" + pi.port);
+    var state = addText(header, "span", "connection-state", "Connecting");
+    header.insertBefore(identity, state);
+    card.appendChild(header);
+
+    var body = element("div", "pi-card-body");
+    var onlineContent = element("div", "online-content");
+    var metrics = element("div", "metric-grid");
+    metrics.appendChild(makeMetric("Temp", "temperature"));
+    metrics.appendChild(makeMetric("Fan duty", "fan"));
+    metrics.appendChild(makeMetric("CPU", "cpu"));
+    metrics.appendChild(makeMetric("Memory", "memory"));
+    metrics.appendChild(makeMetric("Disk", "disk"));
+    onlineContent.appendChild(metrics);
+    var controllerNotice = element("p", "controller-alert");
+    controllerNotice.setAttribute("role", "alert");
+    controllerNotice.hidden = true;
+    onlineContent.appendChild(controllerNotice);
+
+    var visualRow = element("div", "visual-row");
+    var rings = createVisual("System resources", "viz-canvas resource-canvas", "CPU, memory and disk use");
+    rings.figure.appendChild(makeLegend([
+      { label: "CPU", series: "cpu" },
+      { label: "Memory", series: "memory" },
+      { label: "Disk", series: "disk" }
+    ], "visual-legend"));
+    var gauge = createVisual("Fan curve", "viz-canvas fan-canvas", "Fan curve and current temperature");
+    visualRow.appendChild(rings.figure);
+    visualRow.appendChild(gauge.figure);
+    onlineContent.appendChild(visualRow);
+
+    var historyDetails = element("details", "history-panel");
+    addText(historyDetails, "summary", "", "Performance history");
+    var historyCanvas = element("canvas", "history-canvas");
+    historyCanvas.setAttribute("role", "img");
+    historyCanvas.setAttribute("aria-label", "Recent temperature, fan, CPU and memory history");
+    historyDetails.appendChild(historyCanvas);
+    historyDetails.appendChild(makeLegend([
+      { label: "Temp", series: "temperature" },
+      { label: "Fan", series: "fan" },
+      { label: "CPU", series: "cpu" },
+      { label: "Memory", series: "memory" }
+    ], "history-legend"));
+    historyDetails.addEventListener("toggle", function () {
+      if (historyDetails.open) {
+        drawHistory(historyCanvas, histories.get(key));
+      }
+    });
+    onlineContent.appendChild(historyDetails);
+
+    var offlineContent = element("div", "offline-message");
+    offlineContent.hidden = true;
+    var offlineInner = element("div", "");
+    var offlineTitle = addText(offlineInner, "strong", "", "Pi is offline");
+    var offlineText = addText(offlineInner, "span", "", "Waiting for its status endpoint.");
+    offlineContent.appendChild(offlineInner);
+
+    body.appendChild(onlineContent);
+    body.appendChild(offlineContent);
+    card.appendChild(body);
+    byId("fanStatus").appendChild(card);
+
+    var refs = {
+      card: card,
+      name: name,
+      endpoint: endpoint,
+      state: state,
+      online: onlineContent,
+      offline: offlineContent,
+      offlineTitle: offlineTitle,
+      offlineText: offlineText,
+      rings: rings.canvas,
+      gauge: gauge.canvas,
+      history: historyCanvas,
+      historyDetails: historyDetails,
+      controllerNotice: controllerNotice,
+      metrics: {
+        temperature: metrics.querySelector('[data-metric="temperature"]'),
+        fan: metrics.querySelector('[data-metric="fan"]'),
+        cpu: metrics.querySelector('[data-metric="cpu"]'),
+        memory: metrics.querySelector('[data-metric="memory"]'),
+        disk: metrics.querySelector('[data-metric="disk"]')
+      }
+    };
+    cards.set(key, refs);
+    return refs;
+  }
+
+  function syncCards() {
+    var wanted = new Set(pis.map(piKey));
+    cards.forEach(function (refs, key) {
+      if (!wanted.has(key)) {
+        refs.card.remove();
+        cards.delete(key);
+        histories.delete(key);
+        latestStatuses.delete(key);
+      }
+    });
+    pis.forEach(function (pi) {
+      var key = piKey(pi);
+      var refs = cards.get(key) || createCard(pi);
+      refs.name.textContent = pi.name;
+      refs.endpoint.textContent = pi.ip + ":" + pi.port;
+    });
+    byId("emptyState").hidden = pis.length !== 0;
+    byId("fanStatus").hidden = pis.length === 0;
+  }
+
+  function updateCard(result) {
+    var key = piKey(result.pi);
+    var refs = cards.get(key) || createCard(result.pi);
+    if (result.error || !result.status) {
+      refs.card.classList.add("offline");
+      refs.card.classList.remove("degraded");
+      refs.state.textContent = "Offline";
+      refs.online.hidden = true;
+      refs.offline.hidden = false;
+      refs.offlineTitle.textContent = "Pi is offline";
+      refs.offlineText.textContent = result.error || "Status endpoint unavailable";
+      return;
+    }
+
+    var status = result.status;
+    latestStatuses.set(key, status);
+    refs.card.classList.remove("offline");
+    refs.card.classList.toggle("degraded", Boolean(status.controllerError));
+    refs.state.textContent = status.controllerError ? "Fail-safe" : "Online";
+    refs.online.hidden = false;
+    refs.offline.hidden = true;
+    refs.controllerNotice.hidden = !status.controllerError;
+    refs.controllerNotice.textContent = status.controllerError ?
+      "Cooling controller fail-safe: " + status.controllerError : "";
+    refs.metrics.temperature.textContent = displayTemperature(status.temperature);
+    refs.metrics.fan.textContent = displayPercent(status.fan);
+    refs.metrics.cpu.textContent = displayPercent(status.cpu);
+    refs.metrics.memory.textContent = displayPercent(status.memory);
+    refs.metrics.disk.textContent = displayPercent(status.disk);
+    refs.rings.setAttribute("aria-label",
+      "CPU " + displayPercent(status.cpu) + ", memory " + displayPercent(status.memory) +
+      ", disk " + displayPercent(status.disk));
+    var curve = curveForStatus(status);
+    refs.gauge.setAttribute("aria-label",
+      "Temperature " + displayTemperature(status.temperature) + ", fan duty " + displayPercent(status.fan) +
+      ", starts at " + curve.start_temp + " degrees and reaches full speed at " + curve.full_temp + " degrees");
+    appendHistory(key, status);
+    drawResourceRings(refs.rings, status);
+    drawFanGauge(refs.gauge, status, curve);
+    if (refs.historyDetails.open) {
+      drawHistory(refs.history, histories.get(key));
+    }
+  }
+
+  function appendHistory(key, status) {
+    var history = histories.get(key);
+    if (!history) {
+      history = [];
+      histories.set(key, history);
+    }
+    history.push({
+      time: new Date(),
+      temperature: status.temperature,
+      fan: status.fan,
+      cpu: status.cpu,
+      memory: status.memory
+    });
+    if (history.length > MAX_HISTORY_POINTS) {
+      history.splice(0, history.length - MAX_HISTORY_POINTS);
+    }
+  }
+
+  async function pollStatuses() {
+    if (!authenticated || updateInFlight || document.hidden) {
+      return;
+    }
+    if (pis.length === 0) {
+      byId("onlineCount").textContent = "0";
+      byId("offlineCount").textContent = "0";
+      return;
+    }
+    updateInFlight = true;
+    try {
+      var fleet = await fetchFleetStatus();
+      if (!authenticated) {
+        return;
+      }
+      var fleetByKey = new Map();
+      fleet.forEach(function (item) {
+        if (!item || typeof item.ip !== "string" || !Number.isInteger(Number(item.port))) {
+          return;
+        }
+        var remotePi = {
+          name: typeof item.name === "string" ? item.name : item.ip,
+          ip: item.ip,
+          port: Number(item.port)
+        };
+        var data = item.data && typeof item.data === "object" ? item.data : {};
+        var remoteError = typeof item.error === "string" && item.error ? item.error :
+          (typeof data.error === "string" && data.error ? data.error : "");
+        fleetByKey.set(piKey(remotePi), {
+          pi: remotePi,
+          status: remoteError ? null : normalizeStatus(data),
+          error: remoteError
+        });
+      });
+      var results = pis.map(function (pi) {
+        return fleetByKey.get(piKey(pi)) || {
+          pi: pi,
+          status: null,
+          error: "No status was returned for this Pi"
+        };
+      });
+      var online = 0;
+      results.forEach(function (result) {
+        updateCard(result);
+        if (!result.error) {
+          online += 1;
+        }
+      });
+      byId("onlineCount").textContent = String(online);
+      byId("offlineCount").textContent = String(results.length - online);
+      byId("lastUpdate").textContent = "Updated " + new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+      setNotice("dashboardMessage", "", "");
+    } catch (error) {
+      setNotice("dashboardMessage", "Status refresh failed: " + (error.message || "unknown error"), "error");
+    } finally {
+      updateInFlight = false;
+      countdown = REFRESH_SECONDS;
+      updateCountdown();
+    }
+  }
+
+  function updateCountdown() {
+    byId("countdown").textContent = document.hidden ? "Updates paused" : "Refresh in " + countdown + "s";
+  }
+
+  function startPolling() {
+    stopPolling();
+    countdown = REFRESH_SECONDS;
+    updateCountdown();
+    clockTimer = window.setInterval(function () {
+      if (!authenticated || document.hidden) {
+        updateCountdown();
+        return;
+      }
+      countdown -= 1;
+      if (countdown <= 0) {
+        countdown = REFRESH_SECONDS;
+        pollStatuses();
+      }
+      updateCountdown();
+    }, 1000);
+  }
+
+  function cssColor(variable) {
+    return window.getComputedStyle(document.documentElement).getPropertyValue(variable).trim();
+  }
+
+  function prepareCanvas(canvas) {
+    if (!canvas || canvas.hidden || canvas.clientWidth < 2 || canvas.clientHeight < 2) {
+      return null;
+    }
+    var width = Math.round(canvas.clientWidth);
+    var height = Math.round(canvas.clientHeight);
+    var ratio = Math.min(window.devicePixelRatio || 1, 2);
+    var pixelWidth = Math.round(width * ratio);
+    var pixelHeight = Math.round(height * ratio);
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+    var context = canvas.getContext("2d");
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    return { context: context, width: width, height: height };
+  }
+
+  function drawResourceRings(canvas, status) {
+    var surface = prepareCanvas(canvas);
+    if (!surface) {
+      return;
+    }
+    var ctx = surface.context;
+    var width = surface.width;
+    var height = surface.height;
+    var centerX = width / 2;
+    var centerY = height / 2;
+    var baseRadius = Math.max(28, Math.min(width, height) / 2 - 14);
+    var ringGap = Math.max(11, Math.min(15, baseRadius / 4));
+    var values = [
+      { value: status.cpu, color: cssColor("--blue") },
+      { value: status.memory, color: cssColor("--purple") },
+      { value: status.disk, color: cssColor("--amber") }
+    ];
+    ctx.lineWidth = Math.max(6, Math.min(9, ringGap - 3));
+    values.forEach(function (item, index) {
+      var radius = baseRadius - index * ringGap;
+      ctx.beginPath();
+      ctx.strokeStyle = cssColor("--border");
+      ctx.arc(centerX, centerY, radius, -Math.PI / 2, Math.PI * 1.5);
+      ctx.stroke();
+      if (Number.isFinite(item.value)) {
+        ctx.beginPath();
+        ctx.strokeStyle = item.color;
+        ctx.arc(centerX, centerY, radius, -Math.PI / 2,
+          -Math.PI / 2 + Math.PI * 2 * bounded(item.value, 0, 100) / 100);
+        ctx.stroke();
+      }
+    });
+    ctx.fillStyle = cssColor("--foreground");
+    ctx.font = "700 17px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(displayPercent(status.cpu), centerX, centerY - 4);
+    ctx.fillStyle = cssColor("--muted");
+    ctx.font = "600 9px system-ui, sans-serif";
+    ctx.fillText("CPU", centerX, centerY + 12);
+  }
+
+  function temperatureAngle(temperature) {
+    var normalized = bounded((temperature - 20) / 70, 0, 1);
+    return Math.PI + normalized * Math.PI;
+  }
+
+  function drawFanGauge(canvas, status, config) {
+    var surface = prepareCanvas(canvas);
+    if (!surface) {
+      return;
+    }
+    var ctx = surface.context;
+    var width = surface.width;
+    var height = surface.height;
+    var centerX = width / 2;
+    var centerY = Math.min(height - 30, height * 0.72);
+    var radius = Math.max(30, Math.min(width * 0.42, height * 0.55));
+    var currentTemp = Number.isFinite(status.temperature) ? status.temperature : 20;
+    var currentAngle = temperatureAngle(currentTemp);
+
+    ctx.lineWidth = 11;
+    ctx.beginPath();
+    ctx.strokeStyle = cssColor("--border");
+    ctx.arc(centerX, centerY, radius, Math.PI, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.strokeStyle = cssColor("--accent");
+    ctx.arc(centerX, centerY, radius, Math.PI, currentAngle);
+    ctx.stroke();
+
+    [config.start_temp, config.full_temp].forEach(function (temperature, index) {
+      var angle = temperatureAngle(Number(temperature));
+      var x = centerX + Math.cos(angle) * radius;
+      var y = centerY + Math.sin(angle) * radius;
+      ctx.beginPath();
+      ctx.fillStyle = index === 0 ? cssColor("--amber") : cssColor("--red");
+      ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    var needleLength = radius - 16;
+    ctx.beginPath();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = cssColor("--foreground");
+    ctx.moveTo(centerX, centerY);
+    ctx.lineTo(centerX + Math.cos(currentAngle) * needleLength,
+      centerY + Math.sin(currentAngle) * needleLength);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.fillStyle = cssColor("--foreground");
+    ctx.arc(centerX, centerY, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = cssColor("--foreground");
+    ctx.font = "700 17px system-ui, sans-serif";
+    ctx.fillText(displayPercent(status.fan), centerX, centerY + 20);
+    ctx.fillStyle = cssColor("--muted");
+    ctx.font = "600 9px system-ui, sans-serif";
+    ctx.fillText("20°", centerX - radius, centerY + 14);
+    ctx.fillText("90°", centerX + radius, centerY + 14);
+    ctx.fillText(config.start_temp + "° start", centerX, Math.max(10, centerY - radius - 8));
+  }
+
+  function drawHistory(canvas, history) {
+    var surface = prepareCanvas(canvas);
+    if (!surface) {
+      return;
+    }
+    var ctx = surface.context;
+    var width = surface.width;
+    var height = surface.height;
+    var padding = { left: 34, right: 8, top: 10, bottom: 24 };
+    var plotWidth = width - padding.left - padding.right;
+    var plotHeight = height - padding.top - padding.bottom;
+    var series = [
+      { key: "temperature", color: cssColor("--accent") },
+      { key: "fan", color: cssColor("--green") },
+      { key: "cpu", color: cssColor("--blue") },
+      { key: "memory", color: cssColor("--purple") }
+    ];
+
+    ctx.font = "9px system-ui, sans-serif";
+    ctx.fillStyle = cssColor("--muted");
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    [0, 25, 50, 75, 100].forEach(function (tick) {
+      var y = padding.top + plotHeight * (1 - tick / 100);
+      ctx.beginPath();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = cssColor("--border");
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(width - padding.right, y);
+      ctx.stroke();
+      ctx.fillText(String(tick), padding.left - 6, y);
+    });
+
+    if (!history || history.length === 0) {
+      ctx.textAlign = "center";
+      ctx.fillText("History appears after the next update", padding.left + plotWidth / 2,
+        padding.top + plotHeight / 2);
+      return;
+    }
+
+    series.forEach(function (item) {
+      ctx.beginPath();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = item.color;
+      var points = 0;
+      history.forEach(function (sample, index) {
+        var value = sample[item.key];
+        if (!Number.isFinite(value)) {
+          return;
+        }
+        var x = padding.left + (history.length === 1 ? plotWidth / 2 : plotWidth * index / (history.length - 1));
+        var y = padding.top + plotHeight * (1 - bounded(value, 0, 100) / 100);
+        if (points === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+        points += 1;
+      });
+      if (points > 1) {
+        ctx.stroke();
+      } else if (points === 1) {
+        ctx.stroke();
+      }
+    });
+
+    ctx.fillStyle = cssColor("--muted");
+    ctx.font = "9px system-ui, sans-serif";
+    ctx.textBaseline = "bottom";
+    ctx.textAlign = "left";
+    ctx.fillText(history[0].time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      padding.left, height - 2);
+    ctx.textAlign = "right";
+    ctx.fillText(history[history.length - 1].time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      width - padding.right, height - 2);
+  }
+
+  function redrawVisibleCanvases() {
+    cards.forEach(function (refs, key) {
+      var status = latestStatuses.get(key);
+      if (!status || refs.online.hidden) {
+        return;
+      }
+      drawResourceRings(refs.rings, status);
+      drawFanGauge(refs.gauge, status, curveForStatus(status));
+      if (refs.historyDetails.open) {
+        drawHistory(refs.history, histories.get(key));
+      }
+    });
+  }
+
+  async function loadFanConfig() {
+    setNotice("fanConfigMessage", "", "");
+    try {
+      var response = await authFetch("/fan-config");
+      var data = await readResponseJson(response);
+      if (!response.ok) {
+        throw new Error(errorFromResponse(response, data, "Could not load fan settings"));
+      }
+      var config = data.config && typeof data.config === "object" ? data.config : data;
+      fanConfig = {
+        gpio: finiteNumber(config.gpio, 14),
+        start_temp: finiteNumber(config.start_temp, 45),
+        full_temp: finiteNumber(config.full_temp, 75),
+        min_duty: finiteNumber(config.min_duty, 45),
+        hysteresis: finiteNumber(config.hysteresis, 2)
+      };
+      byId("fanGpio").value = String(fanConfig.gpio);
+      byId("fanStartTemp").value = String(fanConfig.start_temp);
+      byId("fanFullTemp").value = String(fanConfig.full_temp);
+      byId("fanMinDuty").value = String(fanConfig.min_duty);
+      byId("fanHysteresis").value = String(fanConfig.hysteresis);
+      redrawVisibleCanvases();
+    } catch (error) {
+      setNotice("fanConfigMessage", error.message || "Could not load fan settings.", "error");
+    }
+  }
+
+  function readFanForm() {
+    return {
+      gpio: Number(byId("fanGpio").value),
+      start_temp: Number(byId("fanStartTemp").value),
+      full_temp: Number(byId("fanFullTemp").value),
+      min_duty: Number(byId("fanMinDuty").value),
+      hysteresis: Number(byId("fanHysteresis").value)
+    };
+  }
+
+  function validateFanConfig(config) {
+    if (ALLOWED_GPIOS.indexOf(config.gpio) === -1) {
+      return "Choose one of the supported GPIO control outputs.";
+    }
+    if (config.start_temp < 20 || config.start_temp > 75) {
+      return "The start temperature must be between 20°C and 75°C.";
+    }
+    if (config.full_temp < config.start_temp + 5 || config.full_temp > 90) {
+      return "Full speed must be at least 5°C above the start temperature and no higher than 90°C.";
+    }
+    if (config.min_duty < 35 || config.min_duty > 100) {
+      return "Starting speed must be between 35% and 100%.";
+    }
+    if (config.hysteresis < 0 || config.hysteresis > 10) {
+      return "Hysteresis must be between 0°C and 10°C.";
+    }
+    return "";
+  }
+
+  async function saveFanConfig(event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var submit = form.querySelector('button[type="submit"]');
+    var config = readFanForm();
+    var validation = validateFanConfig(config);
+    if (validation) {
+      setNotice("fanConfigMessage", validation, "error");
+      return;
+    }
+    submit.disabled = true;
+    setNotice("fanConfigMessage", "", "");
+    try {
+      var response = await authFetch("/fan-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config)
+      });
+      var data = await readResponseJson(response);
+      if (!response.ok) {
+        throw new Error(errorFromResponse(response, data, "Could not save fan settings"));
+      }
+      fanConfig = Object.assign({}, config, data.config || data);
+      setNotice("fanConfigMessage", "Fan curve saved. The controller will apply it within five seconds.", "success");
+      redrawVisibleCanvases();
+    } catch (error) {
+      setNotice("fanConfigMessage", error.message || "Could not save fan settings.", "error");
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  function validIpv4(address) {
+    var parts = String(address).split(".");
+    return parts.length === 4 && parts.every(function (part) {
+      return /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255 &&
+        String(Number(part)) === part;
+    });
+  }
+
+  function validPiName(name) {
+    return /^[A-Za-z0-9 ._-]{1,40}$/.test(name);
+  }
+
+  function validatePi(pi) {
+    if (!validPiName(pi.name)) {
+      return "Names may contain letters, numbers, spaces, dots, underscores and hyphens.";
+    }
+    if (!validIpv4(pi.ip)) {
+      return "Enter a valid IPv4 address, for example 192.168.1.10.";
+    }
+    if (!Number.isInteger(pi.port) || pi.port < 1024 || pi.port > 65535) {
+      return "The port must be between 1024 and 65535.";
+    }
+    return "";
+  }
+
+  function readPiForm(form) {
+    return {
+      name: form.elements.name.value.trim(),
+      ip: form.elements.ip.value.trim(),
+      port: Number(form.elements.port.value)
+    };
+  }
+
+  async function addPi(event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var pi = readPiForm(form);
+    var validation = validatePi(pi);
+    if (validation) {
+      setNotice("piManagerMessage", validation, "error");
+      return;
+    }
+    var submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      var response = await authFetch("/add_pi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pi)
+      });
+      var data = await readResponseJson(response);
+      if (!response.ok) {
+        throw new Error(errorFromResponse(response, data, "Could not add the Pi"));
+      }
+      form.reset();
+      byId("piPortInput").value = String(currentServerPort() >= 1024 ? currentServerPort() : 8088);
+      setNotice("piManagerMessage", pi.name + " was added.", "success");
+      await loadPiList();
+      await pollStatuses();
+    } catch (error) {
+      setNotice("piManagerMessage", error.message || "Could not add the Pi.", "error");
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  function makePiField(labelText, name, type, value) {
+    var field = element("div", "field");
+    var inputId = "edit-" + name + "-" + Math.random().toString(36).slice(2);
+    var label = addText(field, "label", "", labelText);
+    label.htmlFor = inputId;
+    var input = element("input", "");
+    input.id = inputId;
+    input.name = name;
+    input.type = type;
+    input.value = String(value);
+    input.required = true;
+    if (name === "name") {
+      input.maxLength = 40;
+    }
+    if (name === "port") {
+      input.min = "1024";
+      input.max = "65535";
+    }
+    field.appendChild(input);
+    return field;
+  }
+
+  function renderPiManager() {
+    var list = byId("piListDisplay");
+    list.replaceChildren();
+    if (pis.length === 0) {
+      list.appendChild(element("p", "pi-list-empty", "No Pis are configured yet."));
+      return;
+    }
+
+    pis.forEach(function (pi) {
+      var key = piKey(pi);
+      var row = element("div", "pi-list-item");
+      if (editingKey === key) {
+        var form = element("form", "pi-edit-form");
+        form.method = "dialog";
+        form.appendChild(makePiField("Name", "name", "text", pi.name));
+        form.appendChild(makePiField("IPv4 address", "ip", "text", pi.ip));
+        form.appendChild(makePiField("Port", "port", "number", pi.port));
+        var actions = element("div", "pi-list-actions");
+        var cancel = element("button", "button ghost", "Cancel");
+        cancel.type = "button";
+        cancel.addEventListener("click", function () {
+          editingKey = "";
+          renderPiManager();
+        });
+        var save = element("button", "button primary", "Save");
+        save.type = "submit";
+        actions.appendChild(cancel);
+        actions.appendChild(save);
+        form.appendChild(actions);
+        form.addEventListener("submit", function (event) {
+          editPi(event, pi);
+        });
+        row.appendChild(form);
+      } else {
+        var identity = element("div", "");
+        addText(identity, "strong", "", pi.name);
+        addText(identity, "span", "", pi.ip + ":" + pi.port);
+        var buttons = element("div", "pi-list-actions");
+        var edit = element("button", "button", "Edit");
+        edit.type = "button";
+        edit.addEventListener("click", function () {
+          editingKey = key;
+          renderPiManager();
+        });
+        var remove = element("button", "button ghost", "Remove");
+        remove.type = "button";
+        remove.addEventListener("click", function () {
+          pendingDelete = pi;
+          byId("deleteMessage").textContent = "This removes " + pi.name + " (" + pi.ip + ") from the dashboard. It does not uninstall anything from that Pi.";
+          openDialog(byId("deleteDialog"));
+        });
+        buttons.appendChild(edit);
+        buttons.appendChild(remove);
+        row.appendChild(identity);
+        row.appendChild(buttons);
+      }
+      list.appendChild(row);
+    });
+  }
+
+  async function editPi(event, originalPi) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var updated = readPiForm(form);
+    var validation = validatePi(updated);
+    if (validation) {
+      setNotice("piManagerMessage", validation, "error");
+      return;
+    }
+    var submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      var payload = Object.assign({ originalIp: originalPi.ip }, updated);
+      var response = await authFetch("/edit_pi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      var data = await readResponseJson(response);
+      if (!response.ok) {
+        throw new Error(errorFromResponse(response, data, "Could not update the Pi"));
+      }
+      editingKey = "";
+      setNotice("piManagerMessage", updated.name + " was updated.", "success");
+      await loadPiList();
+      await pollStatuses();
+    } catch (error) {
+      setNotice("piManagerMessage", error.message || "Could not update the Pi.", "error");
+      submit.disabled = false;
+    }
+  }
+
+  async function deletePi(event) {
+    event.preventDefault();
+    if (!pendingDelete) {
+      closeDialog(byId("deleteDialog"));
+      return;
+    }
+    var pi = pendingDelete;
+    var submit = event.currentTarget.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      var response = await authFetch("/delete_pi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip: pi.ip })
+      });
+      var data = await readResponseJson(response);
+      if (!response.ok) {
+        throw new Error(errorFromResponse(response, data, "Could not remove the Pi"));
+      }
+      closeDialog(byId("deleteDialog"));
+      pendingDelete = null;
+      setNotice("piManagerMessage", pi.name + " was removed.", "success");
+      await loadPiList();
+      await pollStatuses();
+    } catch (error) {
+      closeDialog(byId("deleteDialog"));
+      setNotice("piManagerMessage", error.message || "Could not remove the Pi.", "error");
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  function applyLayout() {
+    var useThree = false;
+    try {
+      useThree = window.localStorage.getItem("pifandashboard.layout") === "three";
+    } catch (error) {
+      useThree = false;
+    }
+    var grid = byId("fanStatus");
+    grid.classList.toggle("layout-three", useThree);
+    grid.classList.toggle("layout-two", !useThree);
+    var button = byId("layoutToggleButton");
+    button.setAttribute("aria-pressed", String(useThree));
+    button.textContent = useThree ? "2 columns" : "3 columns";
+  }
+
+  function toggleLayout() {
+    var currentlyThree = byId("fanStatus").classList.contains("layout-three");
+    try {
+      window.localStorage.setItem("pifandashboard.layout", currentlyThree ? "two" : "three");
+    } catch (error) {
+      return;
+    } finally {
+      applyLayout();
+      window.setTimeout(redrawVisibleCanvases, 50);
+    }
+  }
+
+  async function openFanSettings() {
+    openDialog(byId("fanSettingsDialog"));
+    await loadFanConfig();
+  }
+
+  async function openPiManager() {
+    setNotice("piManagerMessage", "", "");
+    openDialog(byId("piListDialog"));
+    try {
+      await loadPiList();
+    } catch (error) {
+      setNotice("piManagerMessage", error.message || "Could not load the Pi list.", "error");
+    }
+  }
+
+  async function startDashboard() {
+    applyLayout();
+    setNotice("dashboardMessage", "", "");
+    try {
+      await Promise.all([loadPiList(), loadFanConfig()]);
+      await pollStatuses();
+      startPolling();
+    } catch (error) {
+      if (authenticated) {
+        setNotice("dashboardMessage", error.message || "Could not initialise the dashboard.", "error");
+        startPolling();
+      }
+    }
+  }
+
+  function bindEvents() {
+    byId("loginForm").addEventListener("submit", handleLogin);
+    byId("loginDialog").addEventListener("cancel", function (event) {
+      event.preventDefault();
+    });
+    byId("logoutButton").addEventListener("click", logout);
+    byId("fanSettingsButton").addEventListener("click", openFanSettings);
+    byId("managePisButton").addEventListener("click", openPiManager);
+    byId("emptyAddButton").addEventListener("click", openPiManager);
+    byId("layoutToggleButton").addEventListener("click", toggleLayout);
+    byId("fanSettingsForm").addEventListener("submit", saveFanConfig);
+    byId("addPiForm").addEventListener("submit", addPi);
+    byId("deleteForm").addEventListener("submit", deletePi);
+
+    document.querySelectorAll("[data-close-dialog]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        closeDialog(byId(button.dataset.closeDialog));
+      });
+    });
+
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && authenticated) {
+        countdown = REFRESH_SECONDS;
+        pollStatuses();
+        window.setTimeout(redrawVisibleCanvases, 0);
+      }
+      updateCountdown();
+    });
+
+    window.addEventListener("resize", function () {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(redrawVisibleCanvases, 120);
+    }, { passive: true });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    bindEvents();
+    verifySession();
+  });
+}());
